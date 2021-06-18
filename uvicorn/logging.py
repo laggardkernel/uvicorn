@@ -62,6 +62,7 @@ class ColourizedFormatter(logging.Formatter):
         levelname = recordcopy.levelname
         seperator = " " * (8 - len(recordcopy.levelname))
         if self.use_colors:
+            # CO(lk): levelname is ANSI escaped with color
             levelname = self.color_level_name(levelname, recordcopy.levelno)
             if "color_message" in recordcopy.__dict__:
                 recordcopy.msg = recordcopy.__dict__["color_message"]
@@ -101,6 +102,7 @@ class AccessFormatter(ColourizedFormatter):
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         recordcopy = copy(record)
+        # NOTE(lk): additional positional args
         (
             client_addr,
             method,

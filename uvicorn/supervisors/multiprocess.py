@@ -56,6 +56,8 @@ class Multiprocess:
             signal.signal(sig, self.signal_handler)
 
         for idx in range(self.config.workers):
+            # NOTE(lk): multiprocess mode in uvicorn is limited, only one socket
+            #  for all the sub processes.
             process = get_subprocess(
                 config=self.config, target=self.target, sockets=self.sockets
             )

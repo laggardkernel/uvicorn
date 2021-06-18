@@ -20,10 +20,12 @@ class FlowControl:
         self._transport = transport
         self.read_paused = False
         self.write_paused = False
+        # CO(lk): use event to control writing pause
         self._is_writable_event = asyncio.Event()
         self._is_writable_event.set()
 
     async def drain(self) -> None:
+        # CO(lk): wait for writing resuming
         await self._is_writable_event.wait()
 
     def pause_reading(self) -> None:

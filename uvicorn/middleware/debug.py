@@ -119,4 +119,5 @@ class DebugMiddleware:
                 response = PlainTextResponse(content, status_code=500)
 
             await response(scope, receive, send)
+            # TODO(lk): exc has been sent in resp. break exc chain?
             raise exc from None

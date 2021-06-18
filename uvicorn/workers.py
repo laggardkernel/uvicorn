@@ -32,6 +32,8 @@ class UvicornWorker(Worker):
         logger.setLevel(self.log.access_log.level)
         logger.propagate = False
 
+        # CO(lk): cmd options are passed from gunicorn command,
+        #  but initialized to Uvicorn Config
         config_kwargs: dict = {
             "app": None,
             "log_config": None,
@@ -62,6 +64,7 @@ class UvicornWorker(Worker):
         self.config = Config(**config_kwargs)
 
     def init_process(self) -> None:
+        # CO(lk): entry init_process() -> run()
         self.config.setup_event_loop()
         super(UvicornWorker, self).init_process()
 
@@ -73,6 +76,8 @@ class UvicornWorker(Worker):
             signal.signal(s, signal.SIG_DFL)
 
     async def _serve(self) -> None:
+        # CO(lk): .wsgi is just an app class/obj loaded from string.
+        #  No wsgi -> asgi wrapper is needed. Just a naming thing.
         self.config.app = self.wsgi
         server = Server(config=self.config)
         await server.serve(sockets=self.sockets)
@@ -80,6 +85,7 @@ class UvicornWorker(Worker):
             sys.exit(Arbiter.WORKER_BOOT_ERROR)
 
     def run(self) -> None:
+        # CO(lk): Worker.sockets are managed by Gunicorn but not Uvicorn itself
         return asyncio.run(self._serve())
 
     async def callback_notify(self) -> None:

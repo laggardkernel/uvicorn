@@ -27,6 +27,9 @@ class StatReload(BaseReload):
             )
 
     def should_restart(self) -> Optional[List[Path]]:
+        # CO(lk): unable to detect newly created files or deleted files.
+        #  This seems to be fair, otherwise it's just another implementation
+        #  of `watchgod`.
         self.pause()
 
         for file in self.iter_py_files():

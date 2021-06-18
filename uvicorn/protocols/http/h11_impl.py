@@ -79,6 +79,8 @@ class H11Protocol(asyncio.Protocol):
         self.logger = logging.getLogger("uvicorn.error")
         self.access_logger = logging.getLogger("uvicorn.access")
         self.access_log = self.access_logger.hasHandlers()
+        # CO(lk): operates upon h11.Connection
+        # TODO(lk): HTTP pipelining ins handled by h11.Connection
         self.conn = h11.Connection(h11.SERVER, config.h11_max_incomplete_event_size)
         self.ws_protocol_class = config.ws_protocol_class
         self.root_path = config.root_path
@@ -140,13 +142,17 @@ class H11Protocol(asyncio.Protocol):
                 pass
 
         if self.cycle is not None:
+            # NOTE(lk): notify inner cycle stop waiting data in receive()
             self.cycle.message_event.set()
         if self.flow is not None:
+            # NOTE(lk): resume trans writing, cause inner cycle may wait in send()
             self.flow.resume_writing()
         if exc is None:
             self.transport.close()
 
     def eof_received(self) -> None:
+        # WARN(lk): transp.close() is not controlled in eof_received() beacause
+        #  of HTTP keep-alive? reusing conn?
         pass
 
     def _unset_keepalive_if_required(self) -> None:
@@ -179,6 +185,7 @@ class H11Protocol(asyncio.Protocol):
                 # stop reading any more data, and ensure that at the end
                 # of the active request/response cycle we handle any
                 # events that have been buffered up.
+                # NOTE(lk): Too many request reachd in HTTP pipelining.
                 self.flow.pause_reading()
                 break
 
@@ -233,6 +240,8 @@ class H11Protocol(asyncio.Protocol):
                     message_event=asyncio.Event(),
                     on_response=self.on_response_complete,
                 )
+                # CO(lk): each asgi app handling (request handling) is separated
+                #  as a Task. To get it run concurrently by event loop.
                 task = self.loop.create_task(self.cycle.run_asgi(app))
                 task.add_done_callback(self.tasks.discard)
                 self.tasks.add(task)
@@ -381,7 +390,9 @@ class RequestResponseCycle:
         self.access_logger = access_logger
         self.access_log = access_log
         self.default_headers = default_headers
+        # CO(lk): message_event shared with proto to get notified data reached
         self.message_event = message_event
+        # CO(lk): resp complete cb
         self.on_response = on_response
 
         # Connection state
@@ -422,6 +433,7 @@ class RequestResponseCycle:
                 self.logger.error(msg)
                 self.transport.close()
         finally:
+            # CO(lk): resp cb has been called in send() already
             self.on_response = lambda: None
 
     async def send_500_response(self) -> None:
@@ -446,6 +458,8 @@ class RequestResponseCycle:
         message_type = message["type"]
 
         if self.flow.write_paused and not self.disconnected:
+            # WARN(lk): waiting for writing resumes
+            #  transp -> proto.resume_writing() -> .flow
             await self.flow.drain()
 
         if self.disconnected:
@@ -503,6 +517,7 @@ class RequestResponseCycle:
                 event = h11.Data(data=b"")
             else:
                 event = h11.Data(data=body)
+            # CO(lk): parse and compose the data iss handled by h11.Connection
             output = self.conn.send(event)
             self.transport.write(output)
 
@@ -535,6 +550,10 @@ class RequestResponseCycle:
             self.transport.write(output)
             self.waiting_for_100_continue = False
 
+        # NOTE(lk): .body is received lazily by outside Protocol -> Transport,
+        #  .message_event is set after new data read out from transport.
+        #  Protocol.data_received() get the data.
+        #  FlowControl is the way Cycle feedback to Protocol -> Transport.
         if not self.disconnected and not self.response_complete:
             self.flow.resume_reading()
             await self.message_event.wait()

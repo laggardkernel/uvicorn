@@ -37,6 +37,7 @@ class LifespanOn:
         self.logger = logging.getLogger("uvicorn.error")
         self.startup_event = asyncio.Event()
         self.shutdown_event = asyncio.Event()
+        # CO(lk): send data to app with queue on lifespan
         self.receive_queue: "Queue[LifespanReceiveMessage]" = asyncio.Queue()
         self.error_occured = False
         self.startup_failed = False
@@ -52,6 +53,7 @@ class LifespanOn:
         # See https://github.com/encode/uvicorn/pull/972
         startup_event: LifespanStartupEvent = {"type": "lifespan.startup"}
         await self.receive_queue.put(startup_event)
+        # CO(lk): wait "lifespan" scope being sent and handled by asgi app
         await self.startup_event.wait()
 
         if self.startup_failed or (self.error_occured and self.config.lifespan == "on"):
