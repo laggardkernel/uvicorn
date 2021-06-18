@@ -35,6 +35,12 @@ async def handle_http(
     loop = asyncio.get_event_loop()
     connection_lost = loop.create_future()
 
+    # CO(lk): how transport, protocol, stream works
+    # - `BaseSelectorEventLoop`, accepts new conn, wraps conn as `_SelectorTransport`
+    # - `_SelectorTransport` init sets `StreamReaderProtocol`
+    # - `StreamReaderProtocol` CM calls user `_client_connected_cb()` (`handle_http` from uvicorn)
+    # And the reader, writer provide APIs like .readline(), .readuntil(), writeline()
+
     # Switch the protocol from the stream reader to our own HTTP protocol class.
     protocol = config.http_protocol_class(  # type: ignore[call-arg, operator]
         config=config,
@@ -53,6 +59,8 @@ async def handle_http(
     # callback in all cases. In practice it won't be called on vanilla asyncio.)
     task = asyncio.current_task()
     assert task is not None
+    # CO(lk): though StreamReaderProtocol being replaced by uvicorn protocol,
+    #  the task is not changed, still a conn handling.
 
     @task.add_done_callback
     def retrieve_exception(task: asyncio.Task) -> None:
@@ -86,3 +94,5 @@ async def handle_http(
     # Let the transport run in the background. When closed, this future will complete
     # and we'll exit here.
     await connection_lost
+    # NOTE(lk): the transport and protocol are running like in a state machine.
+    #  We need to wait here to avoid exit and close the loop directly.

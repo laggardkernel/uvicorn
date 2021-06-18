@@ -23,6 +23,7 @@ from uvicorn.protocols.utils import (
     is_ssl,
 )
 
+# TODO(lk): Invalid matching?
 HEADER_RE = re.compile(b'[\x00-\x1F\x7F()<>@,;:[]={} \t\\"]')
 HEADER_VALUE_RE = re.compile(b"[\x00-\x1F\x7F]")
 
@@ -54,6 +55,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         self.logger = logging.getLogger("uvicorn.error")
         self.access_logger = logging.getLogger("uvicorn.access")
         self.access_log = self.access_logger.hasHandlers()
+        # CO(lk): parse and bind onto current protocol instance
         self.parser = httptools.HttpRequestParser(self)
         self.ws_protocol_class = config.ws_protocol_class
         self.root_path = config.root_path
@@ -61,10 +63,13 @@ class HttpToolsProtocol(asyncio.Protocol):
 
         # Timeouts
         self.timeout_keep_alive_task = None
+        # CO(lk): after a while call .timeout_keep_alive_handler(), to close transp
         self.timeout_keep_alive = config.timeout_keep_alive
 
         # Global state
         self.server_state = server_state
+        # CO(lk): share conn, task with ServerState.
+        #  cycle.run_asgi(), a req handling
         self.connections = server_state.connections
         self.tasks = server_state.tasks
         self.default_headers = server_state.default_headers
@@ -75,6 +80,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         self.server = None
         self.client = None
         self.scheme = None
+        # CO(lk): req waiting to be handled in one conn
         self.pipeline = deque()
 
         # Per-request state
@@ -86,6 +92,7 @@ class HttpToolsProtocol(asyncio.Protocol):
 
     # Protocol interface
     def connection_made(self, transport):
+        # CO(lk): share conn to ServeState
         self.connections.add(self)
 
         self.transport = transport
@@ -106,15 +113,19 @@ class HttpToolsProtocol(asyncio.Protocol):
             self.logger.log(TRACE_LOG_LEVEL, "%sHTTP connection lost", prefix)
 
         if self.cycle and not self.cycle.response_complete:
+            # NOTE(lk): notify inner cycle stop handling req
             self.cycle.disconnected = True
         if self.cycle is not None:
+            # NOTE(lk): notify inner cycle stop waiting data in receive()
             self.cycle.message_event.set()
         if self.flow is not None:
+            # NOTE(lk): resume trans writing, cause inner cycle may wait in send()
             self.flow.resume_writing()
         if exc is None:
             self.transport.close()
 
         if self.on_connection_lost is not None:
+            # CO(lk): set future passed from http.handle_http()
             self.on_connection_lost()
 
     def eof_received(self):
@@ -129,6 +140,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         self._unset_keepalive_if_required()
 
         try:
+            # TODO(lk): parsed into .scope and call callbacks on_*() methods
             self.parser.feed_data(data)
         except httptools.HttpParserError as exc:
             msg = "Invalid HTTP request received."
@@ -184,6 +196,7 @@ class HttpToolsProtocol(asyncio.Protocol):
             server_state=self.server_state,
             on_connection_lost=self.on_connection_lost,
         )
+        # CO(lk): replace transp.protocol and start the new protocol
         protocol.connection_made(self.transport)
         protocol.data_received(b"".join(output))
         self.transport.set_protocol(protocol)
@@ -258,6 +271,7 @@ class HttpToolsProtocol(asyncio.Protocol):
             task.add_done_callback(self.tasks.discard)
             self.tasks.add(task)
         else:
+            # CO(lk): use backpressure to stop accepting more requests
             # Pipelined HTTP requests need to be queued up.
             self.flow.pause_reading()
             self.pipeline.appendleft((self.cycle, app))
@@ -268,6 +282,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         self.cycle.body += body
         if len(self.cycle.body) > HIGH_WATER_LIMIT:
             self.flow.pause_reading()
+        # CO(lk): .message_event: sync data received event between proto and req cycle
         self.cycle.message_event.set()
 
     def on_message_complete(self):
@@ -286,6 +301,7 @@ class HttpToolsProtocol(asyncio.Protocol):
         # Set a short Keep-Alive timeout.
         self._unset_keepalive_if_required()
 
+        # CO(lk): close trasnp only after a while, which implements keepalive
         self.timeout_keep_alive_task = self.loop.call_later(
             self.timeout_keep_alive, self.timeout_keep_alive_handler
         )
@@ -352,10 +368,13 @@ class RequestResponseCycle:
         self.access_logger = access_logger
         self.access_log = access_log
         self.default_headers = default_headers
+        # CO(lk): .message_event: sync data received event between proto and req cycle
+        #         on response complete func
         self.message_event = message_event
         self.on_response = on_response
 
         # Connection state
+        # CO(lk): disconnected flag set by proto.CL()
         self.disconnected = False
         self.keep_alive = keep_alive
         self.waiting_for_100_continue = expect_100_continue
@@ -365,6 +384,7 @@ class RequestResponseCycle:
         self.more_body = True
 
         # Response state
+        # CO(lk): if resp sent, completed?
         self.response_started = False
         self.response_complete = False
         self.chunked_encoding = None
@@ -395,6 +415,7 @@ class RequestResponseCycle:
                 self.logger.error(msg)
                 self.transport.close()
         finally:
+            # CO(lk): on_response() from proto: called in .send() and cleared here
             self.on_response = None
 
     async def send_500_response(self):
@@ -417,6 +438,7 @@ class RequestResponseCycle:
         message_type = message["type"]
 
         if self.flow.write_paused and not self.disconnected:
+            # CO(lk): wait for writing resuming
             await self.flow.drain()
 
         if self.disconnected:
@@ -429,6 +451,7 @@ class RequestResponseCycle:
                 raise RuntimeError(msg % message_type)
 
             self.response_started = True
+            # TODO(lk): "100 Continue" must be sent as 1st resp
             self.waiting_for_100_continue = False
 
             status_code = message["status"]
@@ -462,6 +485,7 @@ class RequestResponseCycle:
                     self.chunked_encoding = False
                 elif name == b"transfer-encoding" and value.lower() == b"chunked":
                     self.expected_content_length = 0
+                    # CO(lk): chunk encoding will be used in later send()
                     self.chunked_encoding = True
                 elif name == b"connection" and value.lower() == b"close":
                     self.keep_alive = False
@@ -470,6 +494,7 @@ class RequestResponseCycle:
             if (
                 self.chunked_encoding is None
                 and self.scope["method"] != "HEAD"
+                # CO(lk): if not no content, not modified
                 and status_code not in (204, 304)
             ):
                 # Neither content-length nor transfer-encoding specified
@@ -512,6 +537,7 @@ class RequestResponseCycle:
                 if self.expected_content_length != 0:
                     raise RuntimeError("Response content shorter than Content-Length")
                 self.response_complete = True
+                # CO(lk): wakeup receive()
                 self.message_event.set()
                 if not self.keep_alive:
                     self.transport.close()
@@ -529,6 +555,7 @@ class RequestResponseCycle:
 
         if not self.disconnected and not self.response_complete:
             self.flow.resume_reading()
+            # CO(lk): waiting data from proto/trasnp and passed into asgi app
             await self.message_event.wait()
             self.message_event.clear()
 

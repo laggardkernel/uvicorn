@@ -113,6 +113,7 @@ class WSGIResponder:
             more_body = body_message.get("more_body", False)
         environ = build_environ(self.scope, message, body)
         self.loop = asyncio.get_event_loop()
+        # WARN(lk): run wsgi req handling in executor(thread pool) to avoid blocking
         wsgi = self.loop.run_in_executor(
             self.executor, self.wsgi, environ, self.start_response
         )
@@ -121,6 +122,7 @@ class WSGIResponder:
             await asyncio.wait_for(wsgi, None)
         finally:
             self.send_queue.append(None)
+            # CO(lk): notify that queue is done
             self.send_event.set()
             await asyncio.wait_for(sender, None)
         if self.exc_info is not None:
@@ -143,6 +145,7 @@ class WSGIResponder:
         response_headers: Iterable[Tuple[str, str]],
         exc_info: Optional[ExcInfo] = None,
     ) -> None:
+        # CO(lk): fake start_response() put headers (wsgi resp -> asgi msg) into .send_queue
         self.exc_info = exc_info
         if not self.response_started:
             self.response_started = True
@@ -161,6 +164,7 @@ class WSGIResponder:
             self.loop.call_soon_threadsafe(self.send_event.set)
 
     def wsgi(self, environ: Environ, start_response: StartResponse) -> None:
+        # CO(lk): fake wsgi callable put resp (wsgi resp -> asgi msg) into .send_queue
         for chunk in self.app(environ, start_response):  # type: ignore
             response_body: HTTPResponseBodyEvent = {
                 "type": "http.response.body",

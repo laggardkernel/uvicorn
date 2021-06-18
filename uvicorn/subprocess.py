@@ -11,6 +11,7 @@ from typing import Callable, List, Optional
 
 from uvicorn.config import Config
 
+# TODO(lk): what is connection pickling
 multiprocessing.allow_connection_pickling()
 spawn = multiprocessing.get_context("spawn")
 
