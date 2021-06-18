@@ -417,13 +417,20 @@ def run(app: typing.Union[ASGIApplication, str], **kwargs: typing.Any) -> None:
         )
         sys.exit(1)
 
+    # WARN(lk): Reloader and Multiprocess can't enabled at the same time in uvicorn's
+    #  implementation.
+    # CO(lk): this socket is the listening socket, share between processes
     if config.should_reload:
+        # CO(lk): 1 tcp socket
         sock = config.bind_socket()
         ChangeReload(config, target=server.run, sockets=[sock]).run()
     elif config.workers > 1:
+        # NOTE(lk): multiprocess mode in uvicorn is limited, only one socket
+        #  for all the sub processes.
         sock = config.bind_socket()
         Multiprocess(config, target=server.run, sockets=[sock]).run()
     else:
+        # CO(lk): else, create socket in Server.startup()
         server.run()
 
 

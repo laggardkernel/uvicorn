@@ -22,6 +22,9 @@ class StatReload(BaseReload):
         self.mtimes = {}
 
     def should_restart(self) -> bool:
+        # CO(lk): unable to detect newly created files or deleted files.
+        #  This seems to be fair, otherwise it's just another implementation
+        #  of `watchgod`.
         for filename in self.iter_py_files():
             try:
                 mtime = os.path.getmtime(filename)

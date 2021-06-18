@@ -29,7 +29,9 @@ class ServerState:
 
     def __init__(self):
         self.total_requests = 0
+        # CO(lK): request handling
         self.connections = set()
+        # CO(lk): task: cycle.run_asgi(), a req handling
         self.tasks = set()
         self.default_headers = []
 
@@ -37,19 +39,28 @@ class ServerState:
 class Server:
     def __init__(self, config):
         self.config = config
+        # CO(lk): pass out states out from request handling to Server main_loop()
         self.server_state = ServerState()
 
         self.started = False
         self.should_exit = False
         self.force_exit = False
         self.last_notified = 0
+        # self.servers: []  # sockets/listeners from asyncio.start_server()
 
     def run(self, sockets=None):
         self.config.setup_event_loop()
         loop = asyncio.get_event_loop()
+        # CO(lk): most top task `Server.serve()`.
+        #  非 reload, multiprocess 模式下，socket 为 None.
+        #  否则需要提前准备好方便共享。
         loop.run_until_complete(self.serve(sockets=sockets))
 
     async def serve(self, sockets=None):
+        # NOTE(lk):
+        #  - 1 socket: run by reloader, or multiprocess manager
+        #  - 0 sockets: running without reloader, multiprocess manager
+        #  - multiple sockets: run as gunicorn worker
         process_id = os.getpid()
 
         config = self.config
@@ -64,10 +75,14 @@ class Server:
         color_message = "Started server process [" + click.style("%d", fg="cyan") + "]"
         logger.info(message, process_id, extra={"color_message": color_message})
 
+        # CO(lk): lifespan startup; creates and starts asyncio Server(s) with cb
+        #  handler
         await self.startup(sockets=sockets)
         if self.should_exit:
             return
         await self.main_loop()
+        # CO(lk): check if we should exit the server in a dead loop
+        #  if should_exit, shutdown. If not force_exit, do it gracefully.
         await self.shutdown(sockets=sockets)
 
         message = "Finished server process [%d]"
@@ -80,12 +95,18 @@ class Server:
 
     async def startup(self, sockets: list = None) -> None:
         await self.lifespan.startup()
+        # CO(lk): if lifespan event failed
         if self.lifespan.should_exit:
             self.should_exit = True
             return
 
         config = self.config
 
+        # CO(lk): passed to asyncio StreamReaderProtocol as client_connected_cb
+        #  asyncio/streams.py::StreamReaderProtocol. The cb(handler) may returns
+        #  Task.
+        #  Reader protocol is asyncio StreamReaderProtocol, writer protocol is
+        #  protocols provided by uvicorn.
         async def handler(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         ) -> None:
@@ -93,6 +114,7 @@ class Server:
                 reader, writer, server_state=self.server_state, config=config
             )
 
+        # NOTE(lk): creates and starts asyncio Server: asyncio.start_server()
         if sockets is not None:
             # Explicitly passed a list of open sockets.
             # We use this when the server is run from a Gunicorn worker.
@@ -209,10 +231,12 @@ class Server:
 
     async def main_loop(self):
         counter = 0
+        # CO(lk): check server status to see if we need to exit.
         should_exit = await self.on_tick(counter)
         while not should_exit:
             counter += 1
             counter = counter % 864000
+            # CO(lk): why not sleep zero. Avoid aggressive checking.
             await asyncio.sleep(0.1)
             should_exit = await self.on_tick(counter)
 
@@ -222,6 +246,7 @@ class Server:
             current_time = time.time()
             current_date = formatdate(current_time, usegmt=True).encode()
 
+            # CO(lk): pass default headers into protcol later
             if self.config.date_header:
                 date_header = [(b"date", current_date)]
             else:
@@ -233,6 +258,8 @@ class Server:
 
             # Callback to `callback_notify` once every `timeout_notify` seconds.
             if self.config.callback_notify is not None:
+                # WARN(lk): callback_notify func is NOT set by the user from command line.
+                #  It's from the `UvicornWorker`, calls gunicorn `Worker.notify()`.
                 if current_time - self.last_notified > self.config.timeout_notify:
                     self.last_notified = current_time
                     await self.config.callback_notify()
@@ -240,6 +267,7 @@ class Server:
         # Determine if we should exit.
         if self.should_exit:
             return True
+        # CO(lk): shutdown in single server mode, should work as gunicorn workers.
         if self.config.limit_max_requests is not None:
             return self.server_state.total_requests >= self.config.limit_max_requests
         return False
@@ -253,8 +281,10 @@ class Server:
         for sock in sockets or []:
             sock.close()
         for server in self.servers:
+            # TODO(lk):
             await server.wait_closed()
 
+        # CO(lk): should_exit do a graceful shutdown. force_exit doesn't.
         # Request shutdown on all existing connections.
         for connection in list(self.server_state.connections):
             connection.shutdown()
@@ -294,6 +324,8 @@ class Server:
                 signal.signal(sig, self.handle_exit)
 
     def handle_exit(self, sig, frame):
+        # CO(lk): signal is not handled directly, but in main loop on_tick().
+        #  Ctrl-c twice achieve force exit.
         if self.should_exit:
             self.force_exit = True
         else:

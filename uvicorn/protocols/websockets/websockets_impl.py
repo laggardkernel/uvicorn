@@ -10,6 +10,7 @@ from websockets.extensions.permessage_deflate import ServerPerMessageDeflateFact
 from uvicorn.protocols.utils import get_local_addr, get_remote_addr, is_ssl
 
 
+# CO(lk): a fake server object, share serving status between websocket and transp
 class Server:
     closing = False
 
@@ -49,6 +50,7 @@ class WebSocketProtocol(websockets.WebSocketServerProtocol):
 
         # Connection events
         self.scope = None
+        # CO(lk): states shared during life, ASGI recv after handshake
         self.handshake_started_event = asyncio.Event()
         self.handshake_completed_event = asyncio.Event()
         self.closed_event = asyncio.Event()
@@ -84,6 +86,8 @@ class WebSocketProtocol(websockets.WebSocketServerProtocol):
             self.on_connection_lost()
         if exc is None:
             self.transport.close()
+
+    # TODO(lk): the code is hard to read, DR is not here but in parent
 
     def shutdown(self):
         self.ws_server.closing = True

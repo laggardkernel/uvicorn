@@ -18,6 +18,7 @@ class ProxyHeadersMiddleware:
             self.trusted_hosts = {item.strip() for item in trusted_hosts.split(",")}
         else:
             self.trusted_hosts = set(trusted_hosts)
+        # TODO(lk): implement suffix match
         self.always_trust = "*" in self.trusted_hosts
 
     def get_trusted_client_host(
@@ -27,6 +28,11 @@ class ProxyHeadersMiddleware:
             return x_forwarded_for_hosts[0]
 
         for host in reversed(x_forwarded_for_hosts):
+            # TODO(lk): logic error? Nope, designed to return not trusted host
+            #  https://github.com/encode/uvicorn/pull/591
+            #  the last host in x-forwarded-for is the original ip. others are set by proxy.
+            #  Cause we my trust only the proxy but not the client, this func
+            #  try to get the real client.
             if host not in self.trusted_hosts:
                 return host
 

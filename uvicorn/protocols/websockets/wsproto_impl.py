@@ -42,12 +42,16 @@ class WSProtocol(asyncio.Protocol):
 
         # WebSocket state
         self.connect_event = None
+        # TODO(lk): .queue holds the asgi messages. .bytes .text holds the received
+        #  data. All of them serve as buffers.
         self.queue = asyncio.Queue()
         self.handshake_complete = False
         self.close_sent = False
 
         self.conn = wsproto.WSConnection(connection_type=ConnectionType.SERVER)
 
+        # CO(lk): set after message finished. I guess it's designed to used by
+        #  ASGI app as well.
         self.read_paused = False
         self.writable = asyncio.Event()
         self.writable.set()
@@ -98,6 +102,7 @@ class WSProtocol(asyncio.Protocol):
             elif isinstance(event, events.BytesMessage):
                 self.handle_bytes(event)
             elif isinstance(event, events.RejectConnection):
+                # CO(lk): no connect means bad req, don't handle request
                 self.handle_no_connect(event)
             elif isinstance(event, events.RejectData):
                 self.handle_no_connect(event)
@@ -200,6 +205,8 @@ class WSProtocol(asyncio.Protocol):
             (b"content-type", b"text/plain; charset=utf-8"),
             (b"connection", b"close"),
         ]
+        # CO(lk): wsproto.WSConnection.connection used to whether req handling
+        #  has been started.
         if self.conn.connection is None:
             output = self.conn.send(wsproto.events.RejectConnection(status_code=500))
         else:
@@ -234,6 +241,7 @@ class WSProtocol(asyncio.Protocol):
                 self.transport.close()
 
     async def send(self, message):
+        # WARN(lk): transp -> proto.pause_writing() -> .writable
         await self.writable.wait()
 
         message_type = message["type"]
